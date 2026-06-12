@@ -99,6 +99,39 @@ data class ProgramContent(
     val measurementDays: List<Int>
 )
 
+data class DailyTrainingPlan(
+    val day: ProgramDay,
+    val headline: String,
+    val statusLabels: List<String>,
+    val beforeStart: List<PlanItem>,
+    val warmUp: PlanBlock,
+    val mainBlocks: List<PlanBlock>,
+    val coolDown: PlanBlock
+)
+
+data class PlanBlock(
+    val title: String,
+    val subtitle: String? = null,
+    val labels: List<String> = emptyList(),
+    val groups: List<PlanGroup> = emptyList(),
+    val note: String? = null
+)
+
+data class PlanGroup(
+    val title: String,
+    val instruction: String? = null,
+    val items: List<PlanItem>
+)
+
+data class PlanItem(
+    val order: Int? = null,
+    val exerciseId: String? = null,
+    val visibleName: String,
+    val detail: String,
+    val isTechniqueAvailable: Boolean = false,
+    val timedSeconds: Int? = null
+)
+
 data class ContentValidationResult(
     val isValid: Boolean,
     val errors: List<String>
@@ -127,4 +160,3 @@ object ProgramCalculations {
         return weightOk && waistOk
     }
 }
-

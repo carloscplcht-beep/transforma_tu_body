@@ -5,6 +5,7 @@ package com.carloscplchtbeep.transformatubody
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
@@ -16,7 +17,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -32,6 +32,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.carloscplchtbeep.transformatubody.content.DailyPlanBuilder
 import com.carloscplchtbeep.transformatubody.content.TransformaProgram
 import com.carloscplchtbeep.transformatubody.data.MeasurementEntity
 import com.carloscplchtbeep.transformatubody.data.SessionProgressEntity
@@ -185,7 +186,10 @@ fun OnboardingScreen(onFinish: (ThemeChoice, Boolean) -> Unit) {
 @Composable
 fun AppScaffold(state: AppUiState, vm: AppViewModel) {
     val nav = rememberNavController()
+    var selectedExerciseId by remember { mutableStateOf<String?>(null) }
     val tabs = listOf("hoy" to "Hoy", "programa" to "Programa", "nutricion" to "Nutricion", "progreso" to "Progreso", "mas" to "Mas")
+    val closeExercise = { selectedExerciseId = null }
+    BackHandler(enabled = selectedExerciseId != null) { closeExercise() }
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -203,28 +207,29 @@ fun AppScaffold(state: AppUiState, vm: AppViewModel) {
         }
     ) { padding ->
         NavHost(navController = nav, startDestination = "hoy", modifier = Modifier.padding(padding)) {
-            composable("hoy") { TodayScreen(state, vm, { nav.navigate("session/${it}") }, { nav.navigate("exercise/$it") }) }
+            composable("hoy") { TodayScreen(state, vm, { nav.navigate("session/${it}") }, { selectedExerciseId = it }) }
             composable("programa") { ProgramScreen(state, { nav.navigate("day/$it") }) }
             composable("nutricion") { NutritionScreen() }
             composable("progreso") { ProgressScreen(state, vm) }
             composable("mas") { MoreScreen(vm) }
             composable("day/{day}", arguments = listOf(navArgument("day") { type = NavType.IntType })) {
                 val day = it.arguments?.getInt("day") ?: state.currentDay
-                DayDetailScreen(day, state, vm, { nav.popBackStack() }, { nav.navigate("session/$day") }, { nav.navigate("exercise/$it") })
+                DayDetailScreen(day, state, vm, { nav.popBackStack() }, { nav.navigate("session/$day") }, { selectedExerciseId = it })
             }
             composable("session/{day}", arguments = listOf(navArgument("day") { type = NavType.IntType })) {
-                SessionModeScreen(it.arguments?.getInt("day") ?: state.currentDay, state, vm, { nav.popBackStack() }, { nav.navigate("exercise/$it") })
-            }
-            composable("exercise/{id}") {
-                ExerciseDetailScreen(it.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() })
+                SessionModeScreen(it.arguments?.getInt("day") ?: state.currentDay, state, vm, { nav.popBackStack() }, { selectedExerciseId = it })
             }
         }
+    }
+    selectedExerciseId?.let { exerciseId ->
+        ExerciseTechniqueSheet(exerciseId = exerciseId, onDismiss = closeExercise)
     }
 }
 
 @Composable
 fun TodayScreen(state: AppUiState, vm: AppViewModel, start: (Int) -> Unit, exercise: (String) -> Unit) {
-    val day = TransformaProgram.content.days.first { it.day == state.currentDay }
+    val plan = DailyPlanBuilder.build(state.currentDay)
+    val day = plan.day
     val completed = state.sessions.count { it.completed }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
@@ -233,20 +238,24 @@ fun TodayScreen(state: AppUiState, vm: AppViewModel, start: (Int) -> Unit, exerc
             LinearProgressIndicator(progress = { ProgramCalculations.progressPercent(completed) / 100f }, modifier = Modifier.fillMaxWidth())
             Text("$completed dias completados (${ProgramCalculations.progressPercent(completed)}%)")
         }
-        item { DayCard(day, state.sessions.any { it.day == day.day && it.completed }, onClick = {}, compact = false) }
-        item { Text("Calentamiento", style = MaterialTheme.typography.titleMedium); BulletList(TransformaProgram.content.guide.warmUp) }
-        item { Text("Entrenamiento", style = MaterialTheme.typography.titleMedium); Text(day.prescription) }
-        item { Text("Vuelta a la calma", style = MaterialTheme.typography.titleMedium); BulletList(TransformaProgram.content.guide.coolDown) }
+        item {
+            DayPlanSummaryCard(
+                plan = plan,
+                completed = state.sessions.any { it.day == day.day && it.completed }
+            )
+        }
+        if (plan.beforeStart.isNotEmpty()) {
+            item { BeforeStartCard(plan.beforeStart) }
+        }
+        item { PlanBlockCard(plan.warmUp, exercise) }
+        items(plan.mainBlocks) { block -> PlanBlockCard(block, exercise) }
+        item { PlanBlockCard(plan.coolDown, exercise) }
         item { Text("Nutricion del dia", style = MaterialTheme.typography.titleMedium); Text(day.nutritionNote) }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = { start(day.day) }, modifier = Modifier.weight(1f)) { Text("Comenzar sesion") }
                 OutlinedButton(onClick = { vm.markComplete(day.day) }, modifier = Modifier.weight(1f)) { Text("Marcar completada") }
             }
-        }
-        item { Text("Ejercicios", style = MaterialTheme.typography.titleMedium) }
-        items(day.sessionRefs.flatMap { ref -> TransformaProgram.content.sessions.firstOrNull { it.id == ref }?.blocks.orEmpty() }.flatMap { it.items }.distinctBy { it.exerciseId }) { item ->
-            TextButton(onClick = { exercise(item.exerciseId) }) { Text(item.exerciseId.replace("-", " ")) }
         }
     }
 }
@@ -265,23 +274,17 @@ fun ProgramScreen(state: AppUiState, openDay: (Int) -> Unit) {
 
 @Composable
 fun DayDetailScreen(dayNumber: Int, state: AppUiState, vm: AppViewModel, onBack: () -> Unit, start: () -> Unit, exercise: (String) -> Unit) {
-    val day = TransformaProgram.content.days.first { it.day == dayNumber }
-    val refs = day.sessionRefs.mapNotNull { ref -> TransformaProgram.content.sessions.firstOrNull { it.id == ref } }
+    val plan = DailyPlanBuilder.build(dayNumber)
+    val day = plan.day
     Scaffold(topBar = { TopAppBar(title = { Text("Dia ${day.day}") }, navigationIcon = { TextButton(onClick = onBack) { Text("Atras") } }) }) { padding ->
         LazyColumn(Modifier.padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item { Text(day.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(day.prescription) }
-            items(refs) { session ->
-                ElevatedCard(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(session.title, fontWeight = FontWeight.Bold)
-                        Text(session.description)
-                        session.blocks.forEach { block ->
-                            Text(block.title, fontWeight = FontWeight.SemiBold)
-                            block.items.forEach { TextButton(onClick = { exercise(it.exerciseId) }) { Text("${it.exerciseId.replace("-", " ")}: ${it.prescription}") } }
-                        }
-                    }
-                }
+            item { DayPlanSummaryCard(plan, state.sessions.any { it.day == day.day && it.completed }) }
+            if (plan.beforeStart.isNotEmpty()) {
+                item { BeforeStartCard(plan.beforeStart) }
             }
+            item { PlanBlockCard(plan.warmUp, exercise) }
+            items(plan.mainBlocks) { block -> PlanBlockCard(block, exercise) }
+            item { PlanBlockCard(plan.coolDown, exercise) }
             item { Button(onClick = start, modifier = Modifier.fillMaxWidth()) { Text("Comenzar sesion") } }
             item { OutlinedButton(onClick = { vm.markComplete(day.day) }, modifier = Modifier.fillMaxWidth()) { Text("Marcar como completada") } }
         }
@@ -290,9 +293,9 @@ fun DayDetailScreen(dayNumber: Int, state: AppUiState, vm: AppViewModel, onBack:
 
 @Composable
 fun SessionModeScreen(dayNumber: Int, state: AppUiState, vm: AppViewModel, onBack: () -> Unit, exercise: (String) -> Unit) {
-    val day = TransformaProgram.content.days.first { it.day == dayNumber }
-    val steps = day.sessionRefs.mapNotNull { ref -> TransformaProgram.content.sessions.firstOrNull { it.id == ref } }
-        .flatMap { session -> session.blocks.flatMap { block -> block.items.map { session.title to it } } }
+    val plan = DailyPlanBuilder.build(dayNumber)
+    val steps = listOf(plan.warmUp).plus(plan.mainBlocks).plus(plan.coolDown)
+        .flatMap { block -> block.groups.flatMap { group -> group.items.map { block.title to it } } }
     var index by remember(dayNumber) { mutableIntStateOf(state.sessions.firstOrNull { it.day == dayNumber }?.inProgressStep ?: 0) }
     var paused by remember { mutableStateOf(false) }
     val current = steps.getOrNull(index)
@@ -303,10 +306,12 @@ fun SessionModeScreen(dayNumber: Int, state: AppUiState, vm: AppViewModel, onBac
                 Text("Sesion lista para finalizar.")
             } else {
                 Text(current.first, style = MaterialTheme.typography.titleMedium)
-                Text(current.second.exerciseId.replace("-", " "), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text(current.second.prescription)
+                Text(current.second.visibleName, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(current.second.detail)
                 current.second.timedSeconds?.let { TimerBox(it, paused) }
-                TextButton(onClick = { exercise(current.second.exerciseId) }) { Text("Ver tecnica") }
+                current.second.exerciseId?.let { id ->
+                    if (current.second.isTechniqueAvailable) TextButton(onClick = { exercise(id) }) { Text("Ver tecnica") }
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(onClick = { index = (index - 1).coerceAtLeast(0); vm.saveSessionStep(dayNumber, index) }, modifier = Modifier.weight(1f)) { Text("Anterior") }
@@ -331,11 +336,25 @@ fun TimerBox(seconds: Int, paused: Boolean) {
 }
 
 @Composable
-fun ExerciseDetailScreen(id: String, onBack: () -> Unit) {
+fun ExerciseTechniqueSheet(exerciseId: String, onDismiss: () -> Unit) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        ExerciseSheetContent(exerciseId, onDismiss)
+    }
+}
+
+@Composable
+fun ExerciseSheetContent(id: String, onClose: () -> Unit) {
     val ex = TransformaProgram.content.exercises.firstOrNull { it.id == id }
-    Scaffold(topBar = { TopAppBar(title = { Text(ex?.programName ?: "Ejercicio") }, navigationIcon = { TextButton(onClick = onBack) { Text("Atras") } }) }) { padding ->
-        LazyColumn(Modifier.padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (ex == null) item { Text("Ficha no encontrada.") } else {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Ficha tecnica", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            TextButton(onClick = onClose) { Text("X") }
+        }
+        LazyColumn(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (ex == null) {
+                item { Text("Ficha no encontrada.") }
+            } else {
                 item { Text(ex.programName, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(ex.clearName) }
                 item { Text("Material", fontWeight = FontWeight.Bold); BulletList(ex.material) }
                 item { Text("Posicion inicial", fontWeight = FontWeight.Bold); Text(ex.startPosition) }
@@ -346,6 +365,82 @@ fun ExerciseDetailScreen(id: String, onBack: () -> Unit) {
                 item { Text("Advertencia", fontWeight = FontWeight.Bold); Text(ex.painWarning) }
                 item { Text("Aparece en", fontWeight = FontWeight.Bold); BulletList(ex.appearsIn) }
             }
+        }
+    }
+}
+
+@Composable
+fun DayPlanSummaryCard(plan: DailyTrainingPlan, completed: Boolean) {
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(plan.headline, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(if (completed) "Estado: completado" else if (plan.day.isRecovery) "Estado: recuperacion" else "Estado: pendiente")
+            LabelRow(plan.statusLabels)
+        }
+    }
+}
+
+@Composable
+fun BeforeStartCard(items: List<PlanItem>) {
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Antes de comenzar", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            items.forEach { item ->
+                Text("• ${item.visibleName}: ${item.detail}")
+            }
+        }
+    }
+}
+
+@Composable
+fun PlanBlockCard(block: PlanBlock, openExercise: (String) -> Unit) {
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(block.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            block.subtitle?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            LabelRow(block.labels)
+            block.groups.forEach { group ->
+                Text(group.title, fontWeight = FontWeight.SemiBold)
+                group.instruction?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                group.items.forEach { item -> PlanExerciseRow(item, openExercise) }
+            }
+            block.note?.let { AssistChip(onClick = {}, label = { Text(it) }) }
+        }
+    }
+}
+
+@Composable
+fun PlanExerciseRow(item: PlanItem, openExercise: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            item.order?.let { Text("$it. ", fontWeight = FontWeight.Bold) }
+            if (item.isTechniqueAvailable && item.exerciseId != null) {
+                TextButton(
+                    onClick = { openExercise(item.exerciseId) },
+                    contentPadding = PaddingValues(0.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(item.visibleName, fontWeight = FontWeight.Bold)
+                }
+            } else {
+                Text(item.visibleName, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            }
+        }
+        Text(item.detail)
+        if (item.isTechniqueAvailable && item.exerciseId != null) {
+            TextButton(onClick = { openExercise(item.exerciseId) }, contentPadding = PaddingValues(0.dp)) {
+                Text("i  Ver tecnica")
+            }
+        }
+    }
+}
+
+@Composable
+fun LabelRow(labels: List<String>) {
+    if (labels.isEmpty()) return
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        labels.forEach { label ->
+            AssistChip(onClick = {}, label = { Text(label) })
         }
     }
 }
